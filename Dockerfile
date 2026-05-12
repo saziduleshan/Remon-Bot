@@ -9,6 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /data/tokens
-
 CMD ["python", "main.py"]
