@@ -69,7 +69,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     result = start_auth_flow(chat_id)
     if not result:
-        await update.message.reply_text("❌ Failed to start OAuth. Try again later.")
+        await update.message.reply_text(
+            "❌ Failed to start OAuth. Check server logs.\n"
+            f"Error: {result.get('error', 'unknown')}"
+        )
         return
 
     await update.message.reply_text(result["message"], parse_mode="Markdown")

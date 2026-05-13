@@ -91,9 +91,9 @@ def start_auth_flow(chat_id: int) -> dict | None:
                 f"You have 5 minutes."
             ),
         }
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to start auth flow")
-        return None
+        return {"error": str(e)}
 
 
 def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
