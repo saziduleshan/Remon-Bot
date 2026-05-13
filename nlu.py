@@ -131,7 +131,7 @@ def parse_intent(text: str) -> dict | None:
         return result
 
     # Step 2: Gemini fallback
-    if _gemini_model is not None:
+    if _gemini_client is not None:
         try:
             result = _parse_with_gemini(text)
             if result and result.get("intent", "unknown") != "unknown":
