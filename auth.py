@@ -62,23 +62,15 @@ def _client_config() -> dict:
 
 
 def start_auth_flow(chat_id: int) -> dict | None:
-    import urllib.parse
-
     try:
-        auth_url = (
-            "https://accounts.google.com/o/oauth2/auth?"
-            + urllib.parse.urlencode({
-                "client_id": config.GOOGLE_CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
-                "response_type": "code",
-                "scope": " ".join(SCOPES),
-                "access_type": "offline",
-                "prompt": "consent",
-            })
-        )
         flow = InstalledAppFlow.from_client_config(
             _client_config(), SCOPES,
             redirect_uri=REDIRECT_URI,
+        )
+        auth_url, _ = flow.authorization_url(
+            prompt="consent",
+            access_type="offline",
+            include_granted_scopes="false",
         )
         _pending_auth[chat_id] = flow
         return {
