@@ -47,10 +47,11 @@ def _save(chat_id: int, creds: Credentials) -> None:
         pickle.dump(creds, f)
 
 
-def start_auth_flow(chat_id: int) -> dict | None:
-    import urllib.parse
+REDIRECT_URI = "http://127.0.0.1"
 
-    client_config = {
+
+def _client_config() -> dict:
+    return {
         "installed": {
             "client_id": config.GOOGLE_CLIENT_ID,
             "client_secret": config.GOOGLE_CLIENT_SECRET,
@@ -59,12 +60,16 @@ def start_auth_flow(chat_id: int) -> dict | None:
         }
     }
 
+
+def start_auth_flow(chat_id: int) -> dict | None:
+    import urllib.parse
+
     try:
         auth_url = (
             "https://accounts.google.com/o/oauth2/auth?"
             + urllib.parse.urlencode({
                 "client_id": config.GOOGLE_CLIENT_ID,
-                "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+                "redirect_uri": REDIRECT_URI,
                 "response_type": "code",
                 "scope": " ".join(SCOPES),
                 "access_type": "offline",
@@ -72,8 +77,8 @@ def start_auth_flow(chat_id: int) -> dict | None:
             })
         )
         flow = InstalledAppFlow.from_client_config(
-            client_config, SCOPES,
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob",
+            _client_config(), SCOPES,
+            redirect_uri=REDIRECT_URI,
         )
         _pending_auth[chat_id] = flow
         return {
@@ -82,7 +87,9 @@ def start_auth_flow(chat_id: int) -> dict | None:
                 f"🔑 *Link Google Calendar*\n\n"
                 f"1. Click this link:\n{auth_url}\n\n"
                 f"2. Sign in and authorize\n"
-                f"3. You'll get a code — **copy it and paste it here**\n\n"
+                f"3. Your browser will show an error page — **copy the full URL**\n"
+                f"   from the address bar (it contains `?code=...`)\n"
+                f"4. **Paste that URL here**\n\n"
                 f"You have 5 minutes."
             ),
         }
@@ -91,17 +98,20 @@ def start_auth_flow(chat_id: int) -> dict | None:
         return None
 
 
-def exchange_code(chat_id: int, code: str) -> Credentials | None:
+def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
     flow = _pending_auth.pop(chat_id, None)
     if not flow:
         return None
 
     try:
-        flow.fetch_token(code=code)
+        if url_or_code.startswith("http"):
+            flow.fetch_token(authorization_response=url_or_code)
+        else:
+            flow.fetch_token(code=url_or_code)
         creds = flow.credentials
         _save(chat_id, creds)
         return creds
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to exchange auth code")
         return None
 
