@@ -48,6 +48,8 @@ def _save(chat_id: int, creds: Credentials) -> None:
 
 
 def start_auth_flow(chat_id: int) -> dict | None:
+    import urllib.parse
+
     client_config = {
         "installed": {
             "client_id": config.GOOGLE_CLIENT_ID,
@@ -58,11 +60,21 @@ def start_auth_flow(chat_id: int) -> dict | None:
     }
 
     try:
+        auth_url = (
+            "https://accounts.google.com/o/oauth2/auth?"
+            + urllib.parse.urlencode({
+                "client_id": config.GOOGLE_CLIENT_ID,
+                "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+                "response_type": "code",
+                "scope": " ".join(SCOPES),
+                "access_type": "offline",
+                "prompt": "consent",
+            })
+        )
         flow = InstalledAppFlow.from_client_config(
             client_config, SCOPES,
             redirect_uri="urn:ietf:wg:oauth:2.0:oob",
         )
-        auth_url, _ = flow.authorization_url(prompt="consent")
         _pending_auth[chat_id] = flow
         return {
             "auth_url": auth_url,
@@ -74,7 +86,7 @@ def start_auth_flow(chat_id: int) -> dict | None:
                 f"You have 5 minutes."
             ),
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to start auth flow")
         return None
 
