@@ -1,3 +1,4 @@
+import json
 import logging
 import pickle
 import urllib.parse
@@ -19,7 +20,7 @@ def _token_path(chat_id: int) -> Path:
 
 
 def _flow_path(chat_id: int) -> Path:
-    return Path(config.TOKEN_DIR) / f"flow_{chat_id}.pickle"
+    return Path(config.TOKEN_DIR) / f"flow_{chat_id}.json"
 
 
 def get_credentials(chat_id: int) -> Credentials | None:
@@ -69,11 +70,15 @@ def start_auth_flow(chat_id: int) -> dict | None:
         auth_url, _ = flow.authorization_url(
             prompt="consent",
             access_type="offline",
-            include_granted_scopes="false",
         )
+
+        state = flow.oauth2session.state
+        code_verifier = flow.oauth2session.code_verifier
+
         Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
-        with open(_flow_path(chat_id), "wb") as f:
-            pickle.dump(flow, f)
+        with open(_flow_path(chat_id), "w") as f:
+            json.dump({"state": state, "code_verifier": code_verifier}, f)
+
         return {
             "auth_url": auth_url,
             "message": (
@@ -98,10 +103,17 @@ def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
             logger.warning("No saved flow for chat %s", chat_id)
             return None
 
-        with open(flow_path, "rb") as f:
-            flow: InstalledAppFlow = pickle.load(f)
+        with open(flow_path) as f:
+            saved = json.load(f)
 
         flow_path.unlink()
+
+        flow = InstalledAppFlow.from_client_config(
+            _client_config(), SCOPES,
+            redirect_uri=REDIRECT_URI,
+            state=saved["state"],
+        )
+        flow.oauth2session.code_verifier = saved["code_verifier"]
 
         if url_or_code.startswith("http"):
             flow.fetch_token(authorization_response=url_or_code)

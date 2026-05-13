@@ -523,8 +523,8 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
 
     chat_id = update.effective_chat.id
 
-    # Detect OAuth callback URL (code may come after ? or &)
-    if "&code=" in text and "&state=" in text:
+    # Detect OAuth callback URL (state may be ?state= or &state=)
+    if "&code=" in text and "state=" in text:
         creds = exchange_code(chat_id, text)
         if creds:
             await update.message.reply_text("✅ Google Calendar linked successfully!")
