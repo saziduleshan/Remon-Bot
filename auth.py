@@ -94,15 +94,14 @@ def start_auth_flow(chat_id: int) -> dict | None:
 
 def _save_flow(chat_id: int, flow: InstalledAppFlow) -> None:
     Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
-    data = {
-        "state": flow.oauth2session.state,
-        "client_config": _client_config(),
-        "redirect_uri": REDIRECT_URI,
-        "scopes": SCOPES,
-        "created_at": time.time(),
-    }
-    with open(_flow_path(chat_id), "w") as f:
-        json.dump(data, f)
+    with open(_flow_path(chat_id), "wb") as f:
+        pickle.dump({
+            "state": flow.oauth2session.state,
+            "client_config": _client_config(),
+            "redirect_uri": REDIRECT_URI,
+            "scopes": SCOPES,
+            "created_at": time.time(),
+        }, f)
     logger.info("Saved flow state for chat %s", chat_id)
 
 
@@ -112,10 +111,9 @@ def _load_flow(chat_id: int) -> InstalledAppFlow | None:
         return None
 
     try:
-        with open(path) as f:
-            data = json.load(f)
+        with open(path, "rb") as f:
+            data = pickle.load(f)
 
-        # Expire after 5 minutes
         if time.time() - data.get("created_at", 0) > 300:
             path.unlink()
             return None
@@ -123,7 +121,7 @@ def _load_flow(chat_id: int) -> InstalledAppFlow | None:
         flow = InstalledAppFlow.from_client_config(
             data["client_config"], data["scopes"],
             redirect_uri=data["redirect_uri"],
-            state=data["state"],
+            state=data.get("state"),
         )
         return flow
     except Exception:
