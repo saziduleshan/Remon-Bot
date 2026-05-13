@@ -1,6 +1,7 @@
-import asyncio
+import json
 import logging
 import pickle
+import time
 from pathlib import Path
 
 from google.auth.credentials import Credentials
@@ -11,13 +12,15 @@ from config import config
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
-
-# In-memory store for pending auth flows: {chat_id: flow_state}
-_pending_auth: dict[int, InstalledAppFlow] = {}
+REDIRECT_URI = "http://127.0.0.1"
 
 
 def _token_path(chat_id: int) -> Path:
     return Path(config.TOKEN_DIR) / f"{chat_id}.pickle"
+
+
+def _flow_path(chat_id: int) -> Path:
+    return Path(config.TOKEN_DIR) / f"flow_{chat_id}.json"
 
 
 def get_credentials(chat_id: int) -> Credentials | None:
@@ -47,9 +50,6 @@ def _save(chat_id: int, creds: Credentials) -> None:
         pickle.dump(creds, f)
 
 
-REDIRECT_URI = "http://127.0.0.1"
-
-
 def _client_config() -> dict:
     return {
         "installed": {
@@ -67,12 +67,14 @@ def start_auth_flow(chat_id: int) -> dict | None:
             _client_config(), SCOPES,
             redirect_uri=REDIRECT_URI,
         )
-        auth_url, _ = flow.authorization_url(
+        auth_url, state = flow.authorization_url(
             prompt="consent",
             access_type="offline",
             include_granted_scopes="false",
         )
-        _pending_auth[chat_id] = flow
+
+        _save_flow(chat_id, flow)
+
         return {
             "auth_url": auth_url,
             "message": (
@@ -90,10 +92,52 @@ def start_auth_flow(chat_id: int) -> dict | None:
         return None
 
 
-def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
-    flow = _pending_auth.pop(chat_id, None)
-    if not flow:
+def _save_flow(chat_id: int, flow: InstalledAppFlow) -> None:
+    Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
+    data = {
+        "state": flow.oauth2session.state,
+        "client_config": _client_config(),
+        "redirect_uri": REDIRECT_URI,
+        "scopes": SCOPES,
+        "created_at": time.time(),
+    }
+    with open(_flow_path(chat_id), "w") as f:
+        json.dump(data, f)
+    logger.info("Saved flow state for chat %s", chat_id)
+
+
+def _load_flow(chat_id: int) -> InstalledAppFlow | None:
+    path = _flow_path(chat_id)
+    if not path.exists():
         return None
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+
+        # Expire after 5 minutes
+        if time.time() - data.get("created_at", 0) > 300:
+            path.unlink()
+            return None
+
+        flow = InstalledAppFlow.from_client_config(
+            data["client_config"], data["scopes"],
+            redirect_uri=data["redirect_uri"],
+            state=data["state"],
+        )
+        return flow
+    except Exception:
+        logger.exception("Failed to load flow")
+        return None
+
+
+def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
+    flow = _load_flow(chat_id)
+    if not flow:
+        logger.warning("No pending auth flow for chat %s", chat_id)
+        return None
+
+    _del_flow(chat_id)
 
     try:
         if url_or_code.startswith("http"):
@@ -102,13 +146,21 @@ def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
             flow.fetch_token(code=url_or_code)
         creds = flow.credentials
         _save(chat_id, creds)
+        logger.info("Auth successful for chat %s", chat_id)
         return creds
-    except Exception:
-        logger.exception("Failed to exchange auth code")
+    except Exception as e:
+        logger.exception("Failed to exchange auth code for chat %s", chat_id)
         return None
+
+
+def _del_flow(chat_id: int) -> None:
+    path = _flow_path(chat_id)
+    if path.exists():
+        path.unlink()
 
 
 def clear_credentials(chat_id: int) -> None:
     path = _token_path(chat_id)
     if path.exists():
         path.unlink()
+    _del_flow(chat_id)
