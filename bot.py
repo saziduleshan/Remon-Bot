@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from auth import start_device_flow, poll_device_flow, get_credentials
+from auth import start_auth_flow, exchange_code, get_credentials
 from calendar_api import (
     get_today_events,
     get_next_event,
@@ -67,24 +67,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("✅ Already linked to Google Calendar!")
         return
 
-    result = await start_device_flow(chat_id)
+    result = start_auth_flow(chat_id)
     if not result:
         await update.message.reply_text("❌ Failed to start OAuth. Try again later.")
         return
 
-    await update.message.reply_text(
-        f"🔑 *Link Google Calendar*\n\n"
-        f"1. Visit {result['verification_url']}\n"
-        f"2. Enter code: `{result['user_code']}`\n\n"
-        f"You have 5 minutes. I'll notify you once linked!",
-        parse_mode="Markdown",
-    )
-
-    creds = await poll_device_flow(chat_id)
-    if creds:
-        await update.message.reply_text("✅ Google Calendar linked successfully!")
-    else:
-        await update.message.reply_text("⏰ Timed out or cancelled. Try /start again.")
+    context.user_data["awaiting_auth"] = True
+    await update.message.reply_text(result["message"], parse_mode="Markdown")
 
 
 # ── /today ──────────────────────────────────────────────────────────────────
@@ -533,6 +522,17 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
     if not text:
         return
 
+    chat_id = update.effective_chat.id
+
+    # If waiting for auth code, handle it
+    if context.user_data.pop("awaiting_auth", None):
+        creds = exchange_code(chat_id, text.strip())
+        if creds:
+            await update.message.reply_text("✅ Google Calendar linked successfully!")
+        else:
+            await update.message.reply_text("❌ Invalid code. Try /start again.")
+        return
+
     parsed = parse_intent(text)
     if not parsed:
         await update.message.reply_text(
@@ -548,7 +548,6 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
 
     intent = parsed["intent"]
     entities = parsed["entities"]
-    chat_id = update.effective_chat.id
 
     if intent == "list_today":
         await cmd_today(update, context)

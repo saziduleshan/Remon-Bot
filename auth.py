@@ -1,16 +1,19 @@
 import asyncio
+import logging
 import pickle
 from pathlib import Path
 
-import httpx
-from google.oauth2.credentials import Credentials
+from google.auth.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 from config import config
 
+logger = logging.getLogger(__name__)
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
-# In-memory store for pending device flows: {chat_id: device_code}
-_pending_flows: dict[int, str] = {}
+# In-memory store for pending auth flows: {chat_id: flow_state}
+_pending_auth: dict[int, InstalledAppFlow] = {}
 
 
 def _token_path(chat_id: int) -> Path:
@@ -44,68 +47,51 @@ def _save(chat_id: int, creds: Credentials) -> None:
         pickle.dump(creds, f)
 
 
-async def start_device_flow(chat_id: int) -> dict | None:
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://oauth2.googleapis.com/device/code",
-            data={
-                "client_id": config.GOOGLE_CLIENT_ID,
-                "scope": " ".join(SCOPES),
-            },
-        )
-    if resp.status_code != 200:
-        import logging
-        logging.getLogger(__name__).error(
-            "Device code request failed: %s %s", resp.status_code, resp.text
-        )
-        return None
-
-    data = resp.json()
-    _pending_flows[chat_id] = data["device_code"]
-    return {
-        "verification_url": data["verification_url"],
-        "user_code": data["user_code"],
-        "interval": data.get("interval", 5),
+def start_auth_flow(chat_id: int) -> dict | None:
+    client_config = {
+        "installed": {
+            "client_id": config.GOOGLE_CLIENT_ID,
+            "client_secret": config.GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
     }
 
-
-async def poll_device_flow(chat_id: int) -> Credentials | None:
-    device_code = _pending_flows.pop(chat_id, None)
-    if not device_code:
+    try:
+        flow = InstalledAppFlow.from_client_config(
+            client_config, SCOPES,
+            redirect_uri="urn:ietf:wg:oauth:2.0:oob",
+        )
+        auth_url, _ = flow.authorization_url(prompt="consent")
+        _pending_auth[chat_id] = flow
+        return {
+            "auth_url": auth_url,
+            "message": (
+                f"🔑 *Link Google Calendar*\n\n"
+                f"1. Click this link:\n{auth_url}\n\n"
+                f"2. Sign in and authorize\n"
+                f"3. You'll get a code — **copy it and paste it here**\n\n"
+                f"You have 5 minutes."
+            ),
+        }
+    except Exception as e:
+        logger.exception("Failed to start auth flow")
         return None
 
-    interval = 5
-    for _ in range(60):
-        await asyncio.sleep(interval)
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": config.GOOGLE_CLIENT_ID,
-                    "client_secret": config.GOOGLE_CLIENT_SECRET,
-                    "device_code": device_code,
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                },
-            )
-        token_data = resp.json()
-        if "access_token" in token_data:
-            creds = Credentials(
-                token=token_data["access_token"],
-                refresh_token=token_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=config.GOOGLE_CLIENT_ID,
-                client_secret=config.GOOGLE_CLIENT_SECRET,
-            )
-            _save(chat_id, creds)
-            return creds
-        error = token_data.get("error")
-        if error == "slow_down":
-            interval += 5
-        elif error == "expired_token":
-            break
-        elif error == "access_denied":
-            break
-    return None
+
+def exchange_code(chat_id: int, code: str) -> Credentials | None:
+    flow = _pending_auth.pop(chat_id, None)
+    if not flow:
+        return None
+
+    try:
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        _save(chat_id, creds)
+        return creds
+    except Exception as e:
+        logger.exception("Failed to exchange auth code")
+        return None
 
 
 def clear_credentials(chat_id: int) -> None:
