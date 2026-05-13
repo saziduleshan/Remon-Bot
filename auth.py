@@ -1,7 +1,6 @@
-import json
 import logging
 import pickle
-import time
+import urllib.parse
 from pathlib import Path
 
 from google.auth.credentials import Credentials
@@ -20,7 +19,7 @@ def _token_path(chat_id: int) -> Path:
 
 
 def _flow_path(chat_id: int) -> Path:
-    return Path(config.TOKEN_DIR) / f"flow_{chat_id}.json"
+    return Path(config.TOKEN_DIR) / f"flow_{chat_id}.pickle"
 
 
 def get_credentials(chat_id: int) -> Credentials | None:
@@ -67,14 +66,14 @@ def start_auth_flow(chat_id: int) -> dict | None:
             _client_config(), SCOPES,
             redirect_uri=REDIRECT_URI,
         )
-        auth_url, state = flow.authorization_url(
+        auth_url, _ = flow.authorization_url(
             prompt="consent",
             access_type="offline",
             include_granted_scopes="false",
         )
-
-        _save_flow(chat_id, flow)
-
+        Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
+        with open(_flow_path(chat_id), "wb") as f:
+            pickle.dump(flow, f)
         return {
             "auth_url": auth_url,
             "message": (
@@ -92,73 +91,33 @@ def start_auth_flow(chat_id: int) -> dict | None:
         return None
 
 
-def _save_flow(chat_id: int, flow: InstalledAppFlow) -> None:
-    Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
-    with open(_flow_path(chat_id), "wb") as f:
-        pickle.dump({
-            "state": flow.oauth2session.state,
-            "client_config": _client_config(),
-            "redirect_uri": REDIRECT_URI,
-            "scopes": SCOPES,
-            "created_at": time.time(),
-        }, f)
-    logger.info("Saved flow state for chat %s", chat_id)
-
-
-def _load_flow(chat_id: int) -> InstalledAppFlow | None:
-    path = _flow_path(chat_id)
-    if not path.exists():
-        return None
-
+def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
     try:
-        with open(path, "rb") as f:
-            data = pickle.load(f)
-
-        if time.time() - data.get("created_at", 0) > 300:
-            path.unlink()
+        flow_path = _flow_path(chat_id)
+        if not flow_path.exists():
+            logger.warning("No saved flow for chat %s", chat_id)
             return None
 
-        flow = InstalledAppFlow.from_client_config(
-            data["client_config"], data["scopes"],
-            redirect_uri=data["redirect_uri"],
-            state=data.get("state"),
-        )
-        return flow
-    except Exception:
-        logger.exception("Failed to load flow")
-        return None
+        with open(flow_path, "rb") as f:
+            flow: InstalledAppFlow = pickle.load(f)
 
+        flow_path.unlink()
 
-def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
-    flow = _load_flow(chat_id)
-    if not flow:
-        logger.warning("No pending auth flow for chat %s", chat_id)
-        return None
-
-    _del_flow(chat_id)
-
-    try:
         if url_or_code.startswith("http"):
             flow.fetch_token(authorization_response=url_or_code)
         else:
             flow.fetch_token(code=url_or_code)
+
         creds = flow.credentials
         _save(chat_id, creds)
         logger.info("Auth successful for chat %s", chat_id)
         return creds
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to exchange auth code for chat %s", chat_id)
         return None
 
 
-def _del_flow(chat_id: int) -> None:
-    path = _flow_path(chat_id)
-    if path.exists():
-        path.unlink()
-
-
 def clear_credentials(chat_id: int) -> None:
-    path = _token_path(chat_id)
-    if path.exists():
-        path.unlink()
-    _del_flow(chat_id)
+    for path in (_token_path(chat_id), _flow_path(chat_id)):
+        if path.exists():
+            path.unlink()
