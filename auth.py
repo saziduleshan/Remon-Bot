@@ -54,6 +54,10 @@ async def start_device_flow(chat_id: int) -> dict | None:
             },
         )
     if resp.status_code != 200:
+        import logging
+        logging.getLogger(__name__).error(
+            "Device code request failed: %s %s", resp.status_code, resp.text
+        )
         return None
 
     data = resp.json()
