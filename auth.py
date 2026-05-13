@@ -85,7 +85,7 @@ def start_auth_flow(chat_id: int) -> dict | None:
             "auth_url": auth_url,
             "message": (
                 f"🔑 *Link Google Calendar*\n\n"
-                f"1. Click this link:\n{auth_url}\n\n"
+                f"1. Click this link:\n`{auth_url}`\n\n"
                 f"2. Sign in and authorize\n"
                 f"3. Your browser will show an error page — **copy the full URL**\n"
                 f"   from the address bar (it contains `?code=...`)\n"
