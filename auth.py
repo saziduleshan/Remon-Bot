@@ -1,7 +1,10 @@
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
+
+os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 from google.auth.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
