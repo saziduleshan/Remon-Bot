@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -39,6 +40,7 @@ def register(application):
     application.add_handler(CommandHandler("list", cmd_list))
     application.add_handler(CommandHandler("del", cmd_del))
     application.add_handler(CommandHandler(["help", "commands"], cmd_help))
+    application.add_handler(CommandHandler("ping", cmd_ping))
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("addevent", addevent_start)],
@@ -58,10 +60,14 @@ def register(application):
     return application
 
 
+logger = logging.getLogger(__name__)
+
 # ── /start ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
+    user = update.effective_user
+    logger.info("/start from user %s (chat %s)", user.id if user else "?", chat_id)
     creds = get_credentials(chat_id)
     if creds:
         await update.message.reply_text("✅ Already linked to Google Calendar!")
@@ -70,6 +76,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     result = start_auth_flow(chat_id)
     if not result or "error" in result:
         err = result.get("error", "unknown") if result else "unknown"
+        logger.warning("OAuth start failed for chat %s: %s", chat_id, err)
         await update.message.reply_text(
             f"❌ Failed to start OAuth. Check server logs.\n"
             f"Error: {err}"
@@ -510,12 +517,18 @@ _HELP_TEXT = (
     "/del — Delete event\n"
     "/remind — Set reminder\n"
     "/settings — Configure proactive reminders\n"
+    "/ping — Check if bot is alive\n"
     "/help — Show this message"
 )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(_HELP_TEXT, parse_mode="Markdown")
+
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("/ping from chat %s", update.effective_chat.id)
+    await update.message.reply_text("pong")
 
 
 # ── Natural Language Handler ──────────────────────────────────────────────
