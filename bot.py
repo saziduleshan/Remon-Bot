@@ -68,10 +68,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     result = start_auth_flow(chat_id)
-    if not result:
+    if not result or "error" in result:
+        err = result.get("error", "unknown") if result else "unknown"
         await update.message.reply_text(
-            "❌ Failed to start OAuth. Check server logs.\n"
-            f"Error: {result.get('error', 'unknown')}"
+            f"❌ Failed to start OAuth. Check server logs.\n"
+            f"Error: {err}"
         )
         return
 
@@ -526,8 +527,7 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
 
     chat_id = update.effective_chat.id
 
-    # Detect OAuth callback URL (state may be ?state= or &state=)
-    if "&code=" in text and "state=" in text:
+    if "code=" in text and "state=" in text:
         creds = exchange_code(chat_id, text)
         if creds:
             await update.message.reply_text("✅ Google Calendar linked successfully!")
