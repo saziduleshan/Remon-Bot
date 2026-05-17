@@ -1,6 +1,7 @@
 import json
 import logging
 import pickle
+import secrets
 import urllib.parse
 from pathlib import Path
 
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 REDIRECT_URI = "http://127.0.0.1"
+
+
+def _generate_code_verifier() -> str:
+    return secrets.token_urlsafe(64)
 
 
 def _token_path(chat_id: int) -> Path:
@@ -63,6 +68,8 @@ def _client_config() -> dict:
 
 def start_auth_flow(chat_id: int) -> dict | None:
     try:
+        code_verifier = _generate_code_verifier()
+
         flow = InstalledAppFlow.from_client_config(
             _client_config(), SCOPES,
             redirect_uri=REDIRECT_URI,
@@ -70,10 +77,10 @@ def start_auth_flow(chat_id: int) -> dict | None:
         auth_url, _ = flow.authorization_url(
             prompt="consent",
             access_type="offline",
+            code_verifier=code_verifier,
         )
 
-        state = flow.oauth2session.state
-        code_verifier = flow.oauth2session.code_verifier
+        state = flow.state
 
         Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
         with open(_flow_path(chat_id), "w") as f:
@@ -113,6 +120,10 @@ def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
             redirect_uri=REDIRECT_URI,
             state=saved["state"],
         )
+        try:
+            flow.code_verifier = saved["code_verifier"]
+        except AttributeError:
+            pass
         flow.oauth2session.code_verifier = saved["code_verifier"]
 
         if url_or_code.startswith("http"):
