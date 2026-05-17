@@ -20,11 +20,17 @@ HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8080"))
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def _ok(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"OK")
+
+    def do_GET(self):
+        self._ok()
+
+    def do_HEAD(self):
+        self._ok()
 
     def log_message(self, fmt, *args):
         pass
