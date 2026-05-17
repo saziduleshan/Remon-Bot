@@ -25,6 +25,7 @@ from calendar_api import (
 )
 from config import config
 from nlu import parse_intent
+import reminder_store
 
 # Conversation states for /addevent
 TITLE, DATETIME_STATE, DURATION, REMINDER, CONFIRM = range(5)
@@ -60,6 +61,27 @@ def register(application):
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_language))
 
     return application
+
+
+def reload_reminders(application) -> int:
+    """Re-schedule all persisted reminders after a restart."""
+    reminders = reminder_store.load_all()
+    now = datetime.now(timezone.utc)
+    count = 0
+    for r in reminders:
+        fire_at = datetime.fromisoformat(r["fire_at"])
+        delay = (fire_at - now).total_seconds()
+        if delay > 0:
+            application.job_queue.run_once(
+                _send_reminder,
+                when=delay,
+                data={"chat_id": r["chat_id"], "text": r["text"]},
+                name=r["name"],
+            )
+            count += 1
+        else:
+            reminder_store.remove(r["name"])
+    return count
 
 
 logger = logging.getLogger(__name__)
@@ -227,17 +249,22 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _schedule_reminder(context, chat_id: int, delay_minutes: int, text: str) -> None:
-    job_name = f"remind_{chat_id}"
+    import time as _time
+    payload = f"⏰ Reminder: {text}"
+    job_name = f"remind_{chat_id}_{int(_time.time() * 1000)}"
+    fire_at = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
     context.job_queue.run_once(
         _send_reminder,
         when=delay_minutes * 60,
-        data={"chat_id": chat_id, "text": f"⏰ Reminder: {text}"},
+        data={"chat_id": chat_id, "text": payload},
         name=job_name,
     )
+    reminder_store.save(chat_id, payload, fire_at, job_name)
 
 
 async def _send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     job = context.job
+    reminder_store.remove(job.name)
     await context.bot.send_message(
         chat_id=job.data["chat_id"],
         text=job.data["text"],
@@ -598,12 +625,15 @@ async def addevent_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if reminder:
                 delay = (reminder["at"] - datetime.now(reminder["at"].tzinfo or timezone.utc)).total_seconds()
                 if delay > 0:
+                    job_name = f"evremind_{chat_id}_{int(dt.timestamp())}"
+                    payload = f"⏰ *Reminder:* {title} starts in {reminder['label']}"
                     context.job_queue.run_once(
                         _send_reminder,
                         when=delay,
-                        data={"chat_id": chat_id, "text": f"⏰ *Reminder:* {title} starts in {reminder['label']}"},
-                        name=f"evremind_{chat_id}_{int(dt.timestamp())}",
+                        data={"chat_id": chat_id, "text": payload},
+                        name=job_name,
                     )
+                    reminder_store.save(chat_id, payload, reminder["at"], job_name)
                     lines.append(f"🔔 I'll remind you {reminder['label']}!")
                 else:
                     lines.append("⚠️ Reminder time is in the past — skipped.")

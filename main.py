@@ -6,7 +6,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram.ext import ApplicationBuilder
 
-from bot import register
+from bot import register, reload_reminders
 from config import config
 from scheduler import start_scheduler
 
@@ -41,6 +41,8 @@ async def post_init(application):
     await application.bot.delete_webhook(drop_pending_updates=True)
     logger.info("Existing webhook cleared (if any)")
     start_scheduler(application)
+    restored = reload_reminders(application)
+    logger.info("Restored %d persistent reminders", restored)
     logger.info("Bot started and scheduler initialized")
 
 
