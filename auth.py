@@ -80,7 +80,7 @@ def start_auth_flow(chat_id: int) -> dict | None:
             code_verifier=code_verifier,
         )
 
-        state = flow.state
+        state = getattr(flow, 'state', None) or getattr(flow.oauth2session, 'state', None)
 
         Path(config.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
         with open(_flow_path(chat_id), "w") as f:
@@ -118,8 +118,8 @@ def exchange_code(chat_id: int, url_or_code: str) -> Credentials | None:
         flow = InstalledAppFlow.from_client_config(
             _client_config(), SCOPES,
             redirect_uri=REDIRECT_URI,
-            state=saved["state"],
         )
+        flow.oauth2session.state = saved["state"]
         try:
             flow.code_verifier = saved["code_verifier"]
         except AttributeError:
