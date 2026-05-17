@@ -32,7 +32,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 def _start_health_server():
     server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=False)
     thread.start()
     logger.info("Health check server listening on port %d", HEALTH_PORT)
 
@@ -45,6 +45,9 @@ async def post_init(application):
 
 
 def main():
+    config.load()
+    config.validate()
+
     _start_health_server()
 
     application = (
@@ -60,6 +63,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except RuntimeError as e:
-        logging.error("Startup failed: %s", e)
+    except Exception as e:
+        logging.exception("Startup failed")
         sys.exit(1)
