@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
@@ -37,7 +38,17 @@ async def poll_user(chat_id: int, bot: Bot, lead_times: list[int]) -> None:
 
 async def poll_all(application: Application) -> None:
     bot = application.bot
-    settings = application.bot_data.get("settings", {})
+    settings = application.bot_data.setdefault("settings", {})
+
+    # Auto-register any authenticated user who hasn't configured settings
+    token_dir = Path(config.TOKEN_DIR)
+    if token_dir.exists():
+        for p in token_dir.glob("*.pickle"):
+            chat_id_str = p.stem
+            if chat_id_str not in settings and chat_id_str.lstrip("-").isdigit():
+                settings[chat_id_str] = {"lead_times": [config.DEFAULT_LEAD_TIME_MINUTES]}
+                logger.info("Auto-registered user %s for proactive reminders", chat_id_str)
+
     for chat_id_str, user_settings in settings.items():
         chat_id = int(chat_id_str)
         lead_times = user_settings.get("lead_times", [config.DEFAULT_LEAD_TIME_MINUTES])

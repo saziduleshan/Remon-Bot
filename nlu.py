@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import dateparser
 
@@ -9,18 +10,26 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# ── Gemini setup (optional) ────────────────────────────────────────────────
+# ── Gemini setup (optional, lazy) ─────────────────────────────────────────
 
 _gemini_client = None
+_gemini_initialized = False
 
-if config.GEMINI_API_KEY:
+
+def _get_gemini():
+    global _gemini_client, _gemini_initialized
+    if _gemini_initialized:
+        return _gemini_client
+    _gemini_initialized = True
+    if not config.GEMINI_API_KEY:
+        return None
     try:
         from google import genai
-
         _gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
         logger.info("Gemini NLU initialized")
     except Exception:
         logger.warning("Failed to initialize Gemini — falling back to patterns only")
+    return _gemini_client
 
 
 # ── Pattern definitions ───────────────────────────────────────────────────
@@ -76,6 +85,8 @@ def _compile_patterns():
         _p("list_week", r"this\s+(week'?s\s+)?(events|schedule|calendar|plan|agenda)"),
         _p("list_week", r"what(\'s| is)\s+(happening|going\s+on)\s+(this\s+)?week"),
         _p("list_week", r"what\s+(am\s+i|do\s+i)\s+doing\s+(this\s+)?week"),
+        _p("list_week", r"what(\'s| is)\s+(my\s+)?(schedule|plan|agenda)\s+(for\s+)?(this\s+)?week"),
+        _p("list_week", r"anything\s+(happening|going\s+on)\s+(this\s+)?week"),
 
         # ── list_date ──────────────────────────────────────────────────
         _p("list_date", rf"(what'?s|what\s+is|show|view|list|tell\s+me)\s+(on|for)\s+(tomorrow|{_DAY_NAMES})"),
@@ -90,9 +101,10 @@ def _compile_patterns():
         _p("list_date", r"anything\s+(on|for)\s+(.+)"),
 
         # ── add_event ──────────────────────────────────────────────────
-        _p("add_event", rf"^{_ACTION_WORDS}\s+(?:a\s+|an\s+|the\s+)?(.+)"),
+        _p("add_event", rf"^{_ACTION_WORDS}\s+(?:a\s+|an\s+|the\s+|an?\s+event\s+)?(.+)"),
         _p("add_event", r"^(put|add)\s+(.+?)\s+(on|in|to)\s+(my\s+)?calendar\s+(.+)"),
         _p("add_event", r"^(make|book|schedule)\s+(?:an?\s+)?(appointment|meeting)\s+(?:for\s+)?(.+)"),
+        _p("add_event", r"^(schedule|plan)\s+(.+?)\s+(?:for|on)\s+(.+)"),
 
         # ── delete_event ───────────────────────────────────────────────
         _p("delete_event", rf"^{_DELETE_WORDS}\s+(?:the\s+)?(.+)"),
@@ -110,6 +122,8 @@ def _compile_patterns():
         _p("remind", r"(give\s+me|send)\s+(?:a\s+)?heads?\s*up\s+(?:in\s+)?(.+)"),
         _p("remind", r"don'?t\s+let\s+me\s+forget\s+(?:to\s+)?(.+)"),
         _p("remind", r"nudge\s+me\s+(?:in\s+)?(.+)"),
+        _p("remind", r"remind\s+(me\s+)?about\s+(.+)"),
+        _p("remind", r"remind\s+(me\s+)?(?:to\s+|that\s+)(.+)"),
 
         # ── settings ───────────────────────────────────────────────────
         _p("settings", r"^(settings|preferences|configuration|setup)\s*$"),
@@ -122,24 +136,36 @@ def _compile_patterns():
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
+def _needs_gemini_fallback(result: dict) -> bool:
+    """Pattern matched but missing critical entities — let Gemini try."""
+    intent = result["intent"]
+    entities = result["entities"]
+    if intent == "add_event" and entities.get("datetime") is None:
+        return True
+    if intent == "remind" and entities.get("delay_minutes") is None and entities.get("datetime") is None:
+        return True
+    return False
+
+
 def parse_intent(text: str) -> dict | None:
     """Try pattern matching first, then Gemini fallback."""
 
     # Step 1: patterns
     result = _parse_with_patterns(text)
-    if result:
+    if result and not _needs_gemini_fallback(result):
         return result
 
-    # Step 2: Gemini fallback
-    if _gemini_client is not None:
+    # Step 2: Gemini fallback (either patterns didn't match, or entities are incomplete)
+    gemini = _get_gemini()
+    if gemini is not None:
         try:
-            result = _parse_with_gemini(text)
-            if result and result.get("intent", "unknown") != "unknown":
-                return result
+            gemini_result = _parse_with_gemini(text)
+            if gemini_result and gemini_result.get("intent", "unknown") != "unknown":
+                return gemini_result
         except Exception:
             logger.exception("Gemini parse failed")
 
-    return None
+    return result
 
 
 # ── Pattern matching ───────────────────────────────────────────────────────
@@ -199,10 +225,10 @@ _GEMINI_SYSTEM = (
     "You are a calendar bot intent parser. "
     "Classify messages into these intents: help, list_today, list_next, list_week, "
     "list_date, add_event, delete_event, remind, settings, unknown. "
-    "For add_event: title (string), datetime (ISO 8601 UTC), duration (int minutes, default 60). "
-    "For remind: delay_minutes (int minutes from now), text (string). "
+    "For add_event: title (string), datetime (ISO 8601 with timezone), duration (int minutes, default 60). "
+    "For remind: delay_minutes (int minutes from now) OR datetime (ISO 8601 with timezone), text (string). "
     "For delete_event: index (int or null), query (string). "
-    "For list_date: datetime (ISO 8601, default noon if no time). "
+    "For list_date: datetime (ISO 8601 with timezone, default noon if no time). "
     "Return ONLY valid JSON with fields: intent, entities."
 )
 
@@ -211,7 +237,7 @@ _GEMINI_PROMPT = (
     "Classify the user's message into one of these intents and return ONLY valid JSON:\n"
     "Intents: help, list_today, list_next, list_week, list_date, add_event, delete_event, remind, settings, unknown\n\n"
     "Rules:\n"
-    "- add_event: {\"intent\": \"add_event\", \"entities\": {\"title\": \"...\", \"datetime\": \"ISO 8601 UTC\", \"duration\": 60}}\n"
+    "- add_event: {\"intent\": \"add_event\", \"entities\": {\"title\": \"...\", \"datetime\": \"ISO 8601 with timezone offset\", \"duration\": 60}}\n"
     "- remind: {\"intent\": \"remind\", \"entities\": {\"delay_minutes\": 30, \"text\": \"...\"}}\n"
     "- delete_event: {\"intent\": \"delete_event\", \"entities\": {\"index\": null, \"query\": \"...\"}}\n"
     "- list_date: {\"intent\": \"list_date\", \"entities\": {\"datetime\": \"ISO 8601\"}}\n"
@@ -241,7 +267,10 @@ def _parse_with_gemini(text: str) -> dict | None:
     # Convert ISO datetime strings to datetime objects
     if entities.get("datetime") and isinstance(entities["datetime"], str):
         try:
-            entities["datetime"] = datetime.fromisoformat(entities["datetime"])
+            dt = datetime.fromisoformat(entities["datetime"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo(config.TIMEZONE))
+            entities["datetime"] = dt
         except ValueError:
             del entities["datetime"]
 

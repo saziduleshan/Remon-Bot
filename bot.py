@@ -1,6 +1,7 @@
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import dateparser
 from telegram import Update
@@ -26,7 +27,7 @@ from config import config
 from nlu import parse_intent
 
 # Conversation states for /addevent
-TITLE, DATETIME_STATE, DURATION, CONFIRM = range(4)
+TITLE, DATETIME_STATE, DURATION, REMINDER, CONFIRM = range(5)
 
 
 def register(application):
@@ -48,6 +49,7 @@ def register(application):
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addevent_title)],
             DATETIME_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addevent_datetime)],
             DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, addevent_duration)],
+            REMINDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, addevent_reminder)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, addevent_confirm)],
         },
         fallbacks=[CommandHandler("cancel", addevent_cancel)],
@@ -70,7 +72,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("/start from user %s (chat %s)", user.id if user else "?", chat_id)
     creds = get_credentials(chat_id)
     if creds:
-        await update.message.reply_text("✅ Already linked to Google Calendar!")
+        await update.message.reply_text(
+            "✅ Already linked to Google Calendar!\n\n"
+            "Use /setlead to configure proactive reminders, "
+            "or /help to see all commands."
+        )
         return
 
     result = start_auth_flow(chat_id)
@@ -207,7 +213,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if delay > 0:
             _schedule_reminder(context, chat_id, int(delay // 60), text)
             await update.message.reply_text(
-                f"✅ Reminder set for {parsed.strftime('%a, %b %d at %I:%M %p')}"
+                f"✅ Reminder set for {parsed.strftime('%a, %b %d at %I:%M %p %Z')}"
             )
             return
 
@@ -235,6 +241,7 @@ async def _send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(
         chat_id=job.data["chat_id"],
         text=job.data["text"],
+        parse_mode="Markdown",
     )
 
 
@@ -249,8 +256,8 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         f"⚙️ *Settings*\n\n"
         f"Proactive reminders: {current} before events\n\n"
-        f"To change, send:\n`/setlead 15,30` (one or more, comma-separated)\n"
-        f"Options: {', '.join(str(m) for m in config.LEAD_TIME_OPTIONS)}",
+        f"To change, send:\n`/setlead 30` or `/setlead 15,30`\n"
+        f"Each value is minutes before the event (1–1440).",
         parse_mode="Markdown",
     )
 
@@ -263,11 +270,16 @@ async def cmd_setlead(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /setlead 15,30")
+        await update.message.reply_text(
+            "Usage: `/setlead 30` or `/setlead 15,30` or `/setlead 10 30 60`\n"
+            "Each value is minutes before the event (1–1440).\n"
+            f"Default: {config.DEFAULT_LEAD_TIME_MINUTES} min.",
+            parse_mode="Markdown",
+        )
         return
 
-    raw = "".join(context.args)
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    raw = " ".join(context.args)
+    parts = [p.strip() for p in re.split(r"[,;\s]+", raw) if p.strip()]
     minutes_list = []
     for p in parts:
         try:
@@ -275,18 +287,22 @@ async def cmd_setlead(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except ValueError:
             await update.message.reply_text(f"❌ Invalid number: `{p}`", parse_mode="Markdown")
             return
-        if m not in config.LEAD_TIME_OPTIONS:
-            opts = ", ".join(str(o) for o in config.LEAD_TIME_OPTIONS)
+        if m < 1 or m > 1440:
             await update.message.reply_text(
-                f"❌ `{m}` not valid. Options: {opts}", parse_mode="Markdown"
+                f"❌ `{m}` — each value must be between 1 and 1440 minutes.",
+                parse_mode="Markdown",
             )
             return
         minutes_list.append(m)
 
     context.bot_data.setdefault("settings", {})
-    context.bot_data["settings"][str(chat_id)] = {"lead_times": minutes_list}
-    display = ", ".join(f"{m} min" for m in sorted(minutes_list))
-    await update.message.reply_text(f"✅ Proactive reminders set to: {display} before events")
+    context.bot_data["settings"][str(chat_id)] = {"lead_times": sorted(set(minutes_list))}
+    display = ", ".join(f"{m} min" for m in sorted(set(minutes_list)))
+    await update.message.reply_text(
+        f"✅ Proactive reminders set to: {display} before events\n"
+        f"Use `/settings` to check.",
+        parse_mode="Markdown",
+    )
 
 
 # ── /list [date] ────────────────────────────────────────────────────────────
@@ -432,6 +448,8 @@ async def addevent_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     parse_mode="Markdown",
                 )
                 return DATETIME_STATE
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(config.TIMEZONE))
 
     tz = dt.tzinfo or timezone.utc
     if dt < datetime.now(tz):
@@ -440,7 +458,7 @@ async def addevent_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data["ev_dt"] = dt
     await update.message.reply_text(
-        f"📅 {dt.strftime('%A, %b %d at %I:%M %p')}\n"
+        f"📅 {dt.strftime('%A, %b %d at %I:%M %p %Z')}\n"
         f"⏳ Duration in minutes? (default `60`, or `0` for all-day)",
         parse_mode="Markdown",
     )
@@ -461,18 +479,106 @@ async def addevent_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 duration = h * 60 + min_
 
     context.user_data["ev_duration"] = duration
-    title = context.user_data["ev_title"]
-    dt = context.user_data["ev_dt"]
-    dur_str = "All day" if duration == 0 else f"{duration} min"
 
     await update.message.reply_text(
-        f"📋 *Confirm event:*\n"
-        f"• Title: {title}\n"
-        f"• When: {dt.strftime('%a, %b %d at %I:%M %p')}\n"
-        f"• Duration: {dur_str}\n\n"
-        f"Send ✅ to confirm or ❌ to cancel",
+        "🔔 When should I remind you?\n\n"
+        "• `30` or `30 minutes` → before the event\n"
+        "• `at 7:30 PM` → at a specific time\n"
+        "• `no` or `/skip` → no reminder\n\n"
+        "Or just send ✅ to skip.",
         parse_mode="Markdown",
     )
+    return REMINDER
+
+
+_REMINDER_RELPAT = re.compile(
+    r"(?:(\d+)\s*(?:hours?|hrs?|h))?\s*(?:and\s+)?(?:(\d+)\s*(?:minutes?|mins?|m))?",
+    re.I,
+)
+_REMINDER_TIMEPAT = re.compile(
+    r"(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?",
+    re.I,
+)
+
+
+async def addevent_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().lower()
+    ev_dt: datetime = context.user_data["ev_dt"]
+
+    # Skip
+    if text in ("no", "none", "skip", "/skip", "✅", "n", "nah", "nope"):
+        reminder_info = None
+    # Bare number → minutes before
+    elif text.isdigit():
+        total_min = int(text)
+        if total_min < 1:
+            await update.message.reply_text("❌ Please give a time > 0.")
+            return REMINDER
+        remind_at = ev_dt - timedelta(minutes=total_min)
+        if remind_at <= datetime.now(remind_at.tzinfo or timezone.utc):
+            await update.message.reply_text(
+                "❌ That's already past! Try a smaller lead time."
+            )
+            return REMINDER
+        reminder_info = {"at": remind_at, "label": f"{total_min} min before"}
+    # Relative: "30 minutes", "1 hour", "1h 30m"
+    elif _REMINDER_RELPAT.fullmatch(text) and (re.search(r"\d+", text)):
+        m = _REMINDER_RELPAT.fullmatch(text)
+        h = int(m.group(1)) if m.group(1) else 0
+        min_ = int(m.group(2)) if m.group(2) else 0
+        total_min = h * 60 + min_
+        if total_min < 1:
+            await update.message.reply_text("❌ Please give a time > 0.")
+            return REMINDER
+        remind_at = ev_dt - timedelta(minutes=total_min)
+        if remind_at <= datetime.now(remind_at.tzinfo or timezone.utc):
+            await update.message.reply_text(
+                "❌ That's already past! Try a smaller lead time."
+            )
+            return REMINDER
+        reminder_info = {"at": remind_at, "label": f"{total_min} min before"}
+    # Absolute: "7:30", "at 7:30 PM"
+    elif _REMINDER_TIMEPAT.match(text):
+        m = _REMINDER_TIMEPAT.match(text)
+        hour = int(m.group(1))
+        minute = int(m.group(2))
+        ampm = m.group(3)
+        if ampm:
+            if ampm == "pm" and hour < 12:
+                hour += 12
+            if ampm == "am" and hour == 12:
+                hour = 0
+        remind_at = ev_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if remind_at <= datetime.now(remind_at.tzinfo or timezone.utc):
+            remind_at += timedelta(days=1)
+        reminder_info = {"at": remind_at, "label": remind_at.strftime("%I:%M %p %Z").lstrip("0")}
+    else:
+        await update.message.reply_text(
+            "❌ Couldn't understand. Try:\n"
+            "• `30` → 30 minutes before\n"
+            "• `1 hour` → 1 hour before\n"
+            "• `at 7:30 PM` → at that time\n"
+            "• `no` → skip reminder",
+            parse_mode="Markdown",
+        )
+        return REMINDER
+
+    context.user_data["ev_reminder"] = reminder_info
+
+    title = context.user_data["ev_title"]
+    duration = context.user_data.get("ev_duration", 60)
+    dur_str = "All day" if duration == 0 else f"{duration} min"
+    lines = [
+        f"📋 *Confirm event:*",
+        f"• Title: {title}",
+        f"• When: {ev_dt.strftime('%a, %b %d at %I:%M %p %Z')}",
+        f"• Duration: {dur_str}",
+    ]
+    if reminder_info:
+        lines.append(f"🔔 Remind: {reminder_info['label']}")
+    lines.extend(["", "Send ✅ to confirm or ❌ to cancel"])
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     return CONFIRM
 
 
@@ -487,10 +593,21 @@ async def addevent_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if isinstance(result, str):
             await update.message.reply_text(result)
         else:
-            await update.message.reply_text(
-                f"✅ *Event created!*\n{title} — {dt.strftime('%a, %b %d at %I:%M %p')}",
-                parse_mode="Markdown",
-            )
+            lines = [f"✅ *Event created!*\n{title} — {dt.strftime('%a, %b %d at %I:%M %p %Z')}"]
+            reminder = context.user_data.get("ev_reminder")
+            if reminder:
+                delay = (reminder["at"] - datetime.now(reminder["at"].tzinfo or timezone.utc)).total_seconds()
+                if delay > 0:
+                    context.job_queue.run_once(
+                        _send_reminder,
+                        when=delay,
+                        data={"chat_id": chat_id, "text": f"⏰ *Reminder:* {title} starts in {reminder['label']}"},
+                        name=f"evremind_{chat_id}_{int(dt.timestamp())}",
+                    )
+                    lines.append(f"🔔 I'll remind you {reminder['label']}!")
+                else:
+                    lines.append("⚠️ Reminder time is in the past — skipped.")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Cancelled.")
 
@@ -549,7 +666,16 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
     if "code=" in text and "state=" in text:
         creds = exchange_code(chat_id, text)
         if creds:
-            await update.message.reply_text("✅ Google Calendar linked successfully!")
+            context.application.bot_data.setdefault("settings", {})
+            context.application.bot_data["settings"][str(chat_id)] = {
+                "lead_times": [config.DEFAULT_LEAD_TIME_MINUTES]
+            }
+            await update.message.reply_text(
+                "✅ Google Calendar linked successfully!\n\n"
+                "🔔 Proactive reminders enabled — I'll notify you "
+                f"{config.DEFAULT_LEAD_TIME_MINUTES} minutes before each event.\n"
+                "Use `/setlead 15,30` to customize."
+            )
         else:
             await update.message.reply_text("❌ Invalid code. Try /start again.")
         return
@@ -591,6 +717,10 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     elif intent == "add_event":
+        creds = get_credentials(chat_id)
+        if not creds:
+            await update.message.reply_text("⚠️ Not authenticated. Use /start first.")
+            return
         title = entities.get("title", "Event")
         dt = entities.get("datetime")
         duration = entities.get("duration", 60)
@@ -605,7 +735,7 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text(result)
         else:
             await update.message.reply_text(
-                f"✅ *Event created!*\n{title} — {dt.strftime('%a, %b %d at %I:%M %p')}",
+                f"✅ *Event created!*\n{title} — {dt.strftime('%a, %b %d at %I:%M %p %Z')}",
                 parse_mode="Markdown",
             )
 
@@ -625,14 +755,27 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
     elif intent == "remind":
         delay = entities.get("delay_minutes")
         msg = entities.get("text", text)
-        if delay and delay > 0:
+        if entities.get("datetime"):
+            dt = entities["datetime"]
+            now = datetime.now(dt.tzinfo or timezone.utc)
+            delay = int((dt - now).total_seconds() // 60)
+            if delay > 0:
+                _schedule_reminder(context, chat_id, delay, msg)
+                await update.message.reply_text(
+                    f"✅ Reminder set for {dt.strftime('%a, %b %d at %I:%M %p %Z')}: {msg}"
+                )
+            else:
+                await update.message.reply_text("❌ That time is in the past!")
+        elif delay and delay > 0:
             _schedule_reminder(context, chat_id, delay, msg)
             await update.message.reply_text(
                 f"✅ Reminder set for {delay} minutes: {msg}"
             )
         else:
             await update.message.reply_text(
-                "I couldn't figure out the time. Try:\n`remind me to buy milk in 30 minutes`",
+                "I couldn't figure out the time. Try:\n"
+                "• `remind me to buy milk in 30 minutes`\n"
+                "• `remind me about dentist tomorrow at 2pm`",
                 parse_mode="Markdown",
             )
 

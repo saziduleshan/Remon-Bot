@@ -21,7 +21,7 @@ class _Config:
         self.TOKEN_DIR = os.environ.get("TOKEN_DIR", "./tokens")
         self.POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "5"))
         self.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-        self.TIMEZONE = os.environ.get("TIMEZONE", "UTC")
+        self.TIMEZONE = os.environ.get("TIMEZONE", "Asia/Dhaka")
 
     def validate(self):
         missing = []
