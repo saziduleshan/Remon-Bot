@@ -269,8 +269,8 @@ def _extract_number(text: str) -> int | None:
 def _extract_date(text: str) -> datetime | None:
     return dateparser.parse(text, settings={
         "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
+        "TIMEZONE": config.TIMEZONE,
+        "TO_TIMEZONE": config.TIMEZONE,
         "RETURN_AS_TIMEZONE_AWARE": True,
     })
 
@@ -291,8 +291,8 @@ def _parse_add_event_details(text: str) -> dict | None:
 
     dt = dateparser.parse(text_clean, settings={
         "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
+        "TIMEZONE": config.TIMEZONE,
+        "TO_TIMEZONE": config.TIMEZONE,
         "RETURN_AS_TIMEZONE_AWARE": True,
     })
     if dt:
@@ -361,8 +361,8 @@ def _parse_remind_details(text: str) -> dict | None:
 
     parsed = dateparser.parse(text, settings={
         "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
+        "TIMEZONE": config.TIMEZONE,
+        "TO_TIMEZONE": config.TIMEZONE,
         "RETURN_AS_TIMEZONE_AWARE": True,
     })
     if parsed:

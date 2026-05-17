@@ -5,6 +5,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from auth import get_credentials
+from config import config
 
 
 def _build_service(chat_id: int):
@@ -82,8 +83,8 @@ def add_event(chat_id: int, title: str, start_dt: datetime, duration_minutes: in
     end_dt = start_dt + timedelta(minutes=duration_minutes)
     body = {
         "summary": title,
-        "start": {"dateTime": start_dt.isoformat(), "timeZone": "UTC"},
-        "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": config.TIMEZONE},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": config.TIMEZONE},
     }
     try:
         return service.events().insert(calendarId="primary", body=body).execute()

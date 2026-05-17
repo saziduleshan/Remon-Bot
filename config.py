@@ -10,6 +10,7 @@ class _Config:
     TOKEN_DIR: str = ""
     POLL_INTERVAL_MINUTES: int = 5
     GEMINI_API_KEY: str | None = None
+    TIMEZONE: str = ""
     LEAD_TIME_OPTIONS: list[int] = field(default_factory=lambda: [15, 30, 60])
     DEFAULT_LEAD_TIME_MINUTES: int = 30
 
@@ -20,6 +21,7 @@ class _Config:
         self.TOKEN_DIR = os.environ.get("TOKEN_DIR", "./tokens")
         self.POLL_INTERVAL_MINUTES = int(os.environ.get("POLL_INTERVAL_MINUTES", "5"))
         self.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+        self.TIMEZONE = os.environ.get("TIMEZONE", "UTC")
 
     def validate(self):
         missing = []

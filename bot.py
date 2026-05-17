@@ -197,8 +197,8 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # e.g. "/remind tomorrow at 3pm doctor"
     parsed = dateparser.parse(text, settings={
         "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
+        "TIMEZONE": config.TIMEZONE,
+        "TO_TIMEZONE": config.TIMEZONE,
         "RETURN_AS_TIMEZONE_AWARE": True,
     })
     if parsed:
@@ -412,8 +412,8 @@ async def addevent_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     dt = dateparser.parse(text, settings={
         "PREFER_DATES_FROM": "future",
-        "TIMEZONE": "UTC",
-        "TO_TIMEZONE": "UTC",
+        "TIMEZONE": config.TIMEZONE,
+        "TO_TIMEZONE": config.TIMEZONE,
         "RETURN_AS_TIMEZONE_AWARE": True,
     })
     if not dt:
@@ -449,10 +449,16 @@ async def addevent_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def addevent_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
+    duration = 60
     try:
         duration = max(0, int(text))
     except ValueError:
-        duration = 60
+        m = re.match(r"(?:(\d+)\s*(?:hours?|hrs?|h))?\s*(?:and\s+)?(?:(\d+)\s*(?:minutes?|mins?|m))?", text, re.I)
+        if m:
+            h = int(m.group(1)) if m.group(1) else 0
+            min_ = int(m.group(2)) if m.group(2) else 0
+            if h or min_:
+                duration = h * 60 + min_
 
     context.user_data["ev_duration"] = duration
     title = context.user_data["ev_title"]
